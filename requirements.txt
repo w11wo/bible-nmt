@@ -1,0 +1,6 @@
+accelerate==1.6.0
+datasets==3.6.0
+flash_attn==2.7.4.post1
+sacrebleu==2.5.1
+torch==2.6.0
+transformers==4.51.3
