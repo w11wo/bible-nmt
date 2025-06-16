@@ -54,6 +54,7 @@ def parse_args():
     parser.add_argument("--source_text_column_name", type=str, default="text_source")
     parser.add_argument("--target_text_column_name", type=str, default="text_target")
     parser.add_argument("--max_length", type=int, default=128)
+    parser.add_argument("--num_beams", type=int, default=8)
     parser.add_argument("--per_device_train_batch_size", type=int, default=16)
     parser.add_argument("--per_device_eval_batch_size", type=int, default=16)
     parser.add_argument("--learning_rate", type=float, default=5e-5)
@@ -173,7 +174,12 @@ def main(args):
     )
 
     trainer.train()
-    test_results = trainer.evaluate(eval_dataset=processed_dataset["test"], metric_key_prefix="test")
+    test_results = trainer.evaluate(
+        eval_dataset=processed_dataset["test"],
+        metric_key_prefix="test",
+        max_length=args.max_length,
+        num_beams=args.num_beams,
+    )
     print(test_results)
 
     trainer.save_model()
