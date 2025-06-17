@@ -1,13 +1,14 @@
-python src/run_translation_ebible_corpus.py \
+python src/run_translation.py \
     --model_name facebook/nllb-200-distilled-1.3B \
+    --dataset_name bible-nlp/biblenlp-corpus \
     --src_lang ind \
     --tgt_lang ptu \
     --src_lang_nllb ind_Latn \
     --tgt_lang_nllb ptu_Latn \
     --max_length 256 \
-    --per_device_train_batch_size 16 \
+    --per_device_train_batch_size 64 \
     --per_device_eval_batch_size 16 \
-    --learning_rate 1e-4 \
+    --learning_rate 2e-4 \
     --weight_decay 0.01 \
-    --num_train_epochs 20 \
+    --max_steps 5000 \
     --early_stopping_patience 3

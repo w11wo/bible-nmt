@@ -8,15 +8,50 @@ from transformers import (
     Seq2SeqTrainer,
     Seq2SeqTrainingArguments,
 )
-from datasets import load_dataset
+from datasets import load_dataset, DatasetDict
 import numpy as np
 import evaluate
 import torch
+
+NT_BOOKS = [
+    "MAT",
+    "MRK",
+    "LUK",
+    "JHN",
+    "ACT",
+    "ROM",
+    "1CO",
+    "2CO",
+    "GAL",
+    "EPH",
+    "PHP",
+    "COL",
+    "1TH",
+    "2TH",
+    "1TI",
+    "2TI",
+    "TIT",
+    "PHM",
+    "HEB",
+    "JAB",
+    "1PE",
+    "2PE",
+    "1JN",
+    "2JN",
+    "3JN",
+    "JUD",
+    "REV",
+]
 
 
 def parse_args():
     parser = ArgumentParser()
     parser.add_argument("--model_name", type=str, default="facebook/nllb-200-distilled-1.3B")
+    parser.add_argument(
+        "--dataset_name",
+        type=str,
+        choices=["bible-nlp/biblenlp-corpus", "LazarusNLP/alkitab-sabda-mt"],
+    )
     parser.add_argument("--src_lang", type=str, default="ind")
     parser.add_argument("--tgt_lang", type=str, default="ptu")
     parser.add_argument("--src_lang_nllb", type=str, default="ind_Latn")
@@ -28,21 +63,49 @@ def parse_args():
     parser.add_argument("--learning_rate", type=float, default=5e-5)
     parser.add_argument("--weight_decay", type=float, default=0.01)
     parser.add_argument("--num_train_epochs", type=int, default=20)
+    parser.add_argument("--max_steps", type=int, default=-1)
+    parser.add_argument("--warmup_steps", type=int, default=1000)
     parser.add_argument("--early_stopping_patience", type=int, default=3)
     parser.add_argument("--num_proc", type=int, default=16)
     return parser.parse_args()
 
 
+def load_ebible_corpus(src_lang, tgt_lang):
+    dataset = load_dataset("bible-nlp/biblenlp-corpus", languages=[src_lang, tgt_lang], trust_remote_code=True)
+    dataset = dataset.map(
+        lambda x: {"text_source": x["translation"][0], "text_target": x["translation"][1]},
+        input_columns=["translation"],
+    )
+    return dataset
+
+
+def load_alkitab_sabda(src_lang, tgt_lang):
+    dataset = load_dataset(
+        "LazarusNLP/alkitab-sabda-mt",
+        f"{src_lang}-{tgt_lang}",
+        split="train+validation+test",
+        trust_remote_code=True,
+    )
+    dataset = dataset.map(lambda x: {"book": x["verse_id"].split("_")[0]})
+
+    # OT books for testing, NT books for training and validation
+    train_ds = dataset.filter(lambda x: x["book"] in NT_BOOKS)
+    test_ds = dataset.filter(lambda x: x["book"] not in NT_BOOKS)
+    train_val_ds = train_ds.train_test_split(test_size=0.1, seed=41)
+    dataset = DatasetDict({"train": train_val_ds["train"], "validation": train_val_ds["test"], "test": test_ds})
+    return dataset
+
+
 def main(args):
     src_lang, tgt_lang = args.src_lang, args.tgt_lang
     src_lang_nllb, tgt_lang_nllb = args.src_lang_nllb, args.tgt_lang_nllb
-    output_dir = f"{args.model_name.split('/')[-1]}-ebible-corpus-mt-{src_lang}-{tgt_lang}"
+    dataset_name = args.dataset_name.split("/")[-1]
+    output_dir = f"{args.model_name.split('/')[-1]}-{dataset_name}-{src_lang}-{tgt_lang}"
 
-    dataset = load_dataset(
-        "bible-nlp/biblenlp-corpus",
-        languages=[src_lang, tgt_lang],
-        trust_remote_code=True,
-    )
+    if dataset_name == "biblenlp-corpus":
+        dataset = load_ebible_corpus(src_lang, tgt_lang)
+    elif dataset_name == "alkitab-sabda-mt":
+        dataset = load_alkitab_sabda(src_lang, tgt_lang)
 
     model = AutoModelForSeq2SeqLM.from_pretrained(
         args.model_name,
@@ -72,12 +135,9 @@ def main(args):
     model.tie_weights()
 
     def preprocess_function(examples):
-        batch = examples["translation"]
-        source_texts = [b["translation"][0] for b in batch]
-        target_texts = [b["translation"][1] for b in batch]
         return tokenizer(
-            source_texts,
-            text_target=target_texts,
+            examples["text_source"],
+            text_target=examples["text_target"],
             max_length=args.max_length,
             padding="max_length",
             truncation=True,
@@ -127,9 +187,12 @@ def main(args):
         save_strategy="epoch",
         per_device_train_batch_size=args.per_device_train_batch_size,
         per_device_eval_batch_size=args.per_device_eval_batch_size,
+        optim="adamw_torch",
+        warmup_steps=args.warmup_steps,
         learning_rate=args.learning_rate,
         weight_decay=args.weight_decay,
         num_train_epochs=args.num_train_epochs,
+        max_steps=args.max_steps,
         save_total_limit=3,
         load_best_model_at_end=True,
         metric_for_best_model="chrf",

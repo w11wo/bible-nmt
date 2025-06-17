@@ -2,14 +2,75 @@ from argparse import ArgumentParser
 import json
 
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, pipeline
-from datasets import load_dataset
+from datasets import load_dataset, DatasetDict
 import evaluate
 import torch
+
+NT_BOOKS = [
+    "MAT",
+    "MRK",
+    "LUK",
+    "JHN",
+    "ACT",
+    "ROM",
+    "1CO",
+    "2CO",
+    "GAL",
+    "EPH",
+    "PHP",
+    "COL",
+    "1TH",
+    "2TH",
+    "1TI",
+    "2TI",
+    "TIT",
+    "PHM",
+    "HEB",
+    "JAB",
+    "1PE",
+    "2PE",
+    "1JN",
+    "2JN",
+    "3JN",
+    "JUD",
+    "REV",
+]
+
+
+def load_ebible_corpus(src_lang, tgt_lang):
+    dataset = load_dataset("bible-nlp/biblenlp-corpus", languages=[src_lang, tgt_lang], trust_remote_code=True)
+    dataset = dataset.map(
+        lambda x: {"text_source": x["translation"][0], "text_target": x["translation"][1]}, input_columns="translation"
+    )
+    dataset = dataset.map(lambda x: {"verse_id": x[0], "book": x[0].split()[0]}, input_columns="ref")
+    return dataset
+
+
+def load_alkitab_sabda(src_lang, tgt_lang):
+    dataset = load_dataset(
+        "LazarusNLP/alkitab-sabda-mt",
+        f"{src_lang}-{tgt_lang}",
+        split="train+validation+test",
+        trust_remote_code=True,
+    )
+    dataset = dataset.map(lambda x: {"book": x["verse_id"].split("_")[0]})
+
+    # OT books for testing, NT books for training and validation
+    train_ds = dataset.filter(lambda x: x["book"] in NT_BOOKS)
+    test_ds = dataset.filter(lambda x: x["book"] not in NT_BOOKS)
+    train_val_ds = train_ds.train_test_split(test_size=0.1, seed=41)
+    dataset = DatasetDict({"train": train_val_ds["train"], "validation": train_val_ds["test"], "test": test_ds})
+    return dataset
 
 
 def parse_args():
     parser = ArgumentParser()
     parser.add_argument("--model_name", type=str, default="facebook/nllb-200-distilled-600M")
+    parser.add_argument(
+        "--dataset_name",
+        type=str,
+        choices=["bible-nlp/biblenlp-corpus", "LazarusNLP/alkitab-sabda-mt"],
+    )
     parser.add_argument("--src_lang", type=str, default="ind")
     parser.add_argument("--tgt_lang", type=str, default="btx")
     parser.add_argument("--src_lang_nllb", type=str, default="ind_Latn")
@@ -26,18 +87,19 @@ def parse_args():
 def main(args):
     src_lang, tgt_lang = args.src_lang, args.tgt_lang
     src_lang_nllb, tgt_lang_nllb = args.src_lang_nllb, args.tgt_lang_nllb
+    dataset_name = args.dataset_name.split("/")[-1]
     output_dir = args.model_name.split("/")[-1]
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    dataset = load_dataset(
-        "bible-nlp/biblenlp-corpus",
-        languages=[src_lang, tgt_lang],
-        trust_remote_code=True,
-        split=args.dataset_split_name,
-    )
+    if dataset_name == "biblenlp-corpus":
+        dataset = load_ebible_corpus(src_lang, tgt_lang)
+    elif dataset_name == "alkitab-sabda-mt":
+        dataset = load_alkitab_sabda(src_lang, tgt_lang)
+
+    dataset = dataset[args.dataset_split_name]
 
     if args.book_name:
-        dataset = dataset.filter(lambda x: x["ref"][0].split()[0] == args.book_name)
+        dataset = dataset.filter(lambda x: x["book"] == args.book_name)
 
     model = AutoModelForSeq2SeqLM.from_pretrained(
         args.model_name,
@@ -66,8 +128,7 @@ def main(args):
         return preds, labels
 
     def compute_metrics(eval_preds):
-        preds, labels = eval_preds["prediction"], eval_preds["target"]
-        refs = [ref[0] for ref in eval_preds["ref"]]
+        preds, labels, verse_ids = eval_preds["prediction"], eval_preds["target"], eval_preds["verse_id"]
         cleaned_preds, cleaned_labels = postprocess_text(preds, labels)
 
         bleu_result = bleu.compute(predictions=cleaned_preds, references=cleaned_labels)
@@ -75,24 +136,25 @@ def main(args):
         eval_result = {"bleu": bleu_result["bleu"], "chrf": chrf_result["score"]}
         eval_result = {k: round(v, 4) for k, v in eval_result.items()}
 
-        results = [{"ref": ref, "prediction": pred, "target": label} for ref, pred, label in zip(refs, preds, labels)]
+        results = [
+            {"verse_id": verse_id, "prediction": pred, "target": label}
+            for verse_id, pred, label in zip(verse_ids, preds, labels)
+        ]
 
         return {"eval_metrics": eval_result, "results": results}
 
     def infer(batch):
-        source_texts = [b["translation"][0] for b in batch["translation"]]
-        target_texts = [b["translation"][1] for b in batch["translation"]]
         predictions = [
             out["translation_text"]
             for out in translator(
-                source_texts,
+                batch["text_source"],
                 batch_size=args.per_device_eval_batch_size,
                 max_length=args.max_length,
                 num_beams=args.num_beams,
             )
         ]
         batch["prediction"] = predictions
-        batch["target"] = target_texts
+        batch["target"] = batch["text_target"]
         return batch
 
     results = dataset.map(infer, batched=True, batch_size=args.per_device_eval_batch_size)
