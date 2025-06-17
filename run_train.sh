@@ -1,11 +1,9 @@
-python src/run_translation.py \
+python src/run_translation_ebible_corpus.py \
     --model_name facebook/nllb-200-distilled-1.3B \
     --src_lang ind \
-    --tgt_lang btx \
+    --tgt_lang ptu \
     --src_lang_nllb ind_Latn \
-    --tgt_lang_nllb btx_Latn \
-    --source_text_column_name text_source \
-    --target_text_column_name text_target \
+    --tgt_lang_nllb ptu_Latn \
     --max_length 256 \
     --per_device_train_batch_size 16 \
     --per_device_eval_batch_size 16 \

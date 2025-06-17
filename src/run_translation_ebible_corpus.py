@@ -8,51 +8,19 @@ from transformers import (
     Seq2SeqTrainer,
     Seq2SeqTrainingArguments,
 )
-from datasets import load_dataset, DatasetDict
+from datasets import load_dataset
 import numpy as np
 import evaluate
 import torch
 
-NT_BOOKS = [
-    "MAT",
-    "MRK",
-    "LUK",
-    "JHN",
-    "ACT",
-    "ROM",
-    "1CO",
-    "2CO",
-    "GAL",
-    "EPH",
-    "PHP",
-    "COL",
-    "1TH",
-    "2TH",
-    "1TI",
-    "2TI",
-    "TIT",
-    "PHM",
-    "HEB",
-    "JAB",
-    "1PE",
-    "2PE",
-    "1JN",
-    "2JN",
-    "3JN",
-    "JUD",
-    "REV",
-]
-
 
 def parse_args():
     parser = ArgumentParser()
-    parser.add_argument("--model_name", type=str, default="facebook/nllb-200-distilled-600M")
+    parser.add_argument("--model_name", type=str, default="facebook/nllb-200-distilled-1.3B")
     parser.add_argument("--src_lang", type=str, default="ind")
-    parser.add_argument("--tgt_lang", type=str, default="btx")
+    parser.add_argument("--tgt_lang", type=str, default="ptu")
     parser.add_argument("--src_lang_nllb", type=str, default="ind_Latn")
-    parser.add_argument("--tgt_lang_nllb", type=str, default="btx_Latn")
-    parser.add_argument("--source_text_column_name", type=str, default="text_source")
-    parser.add_argument("--target_text_column_name", type=str, default="text_target")
+    parser.add_argument("--tgt_lang_nllb", type=str, default="ptu_Latn")
     parser.add_argument("--max_length", type=int, default=128)
     parser.add_argument("--num_beams", type=int, default=8)
     parser.add_argument("--per_device_train_batch_size", type=int, default=16)
@@ -68,21 +36,13 @@ def parse_args():
 def main(args):
     src_lang, tgt_lang = args.src_lang, args.tgt_lang
     src_lang_nllb, tgt_lang_nllb = args.src_lang_nllb, args.tgt_lang_nllb
-    output_dir = f"{args.model_name.split('/')[-1]}-alkitab-sabda-mt-{src_lang}-{tgt_lang}"
+    output_dir = f"{args.model_name.split('/')[-1]}-ebible-corpus-mt-{src_lang}-{tgt_lang}"
 
     dataset = load_dataset(
-        "LazarusNLP/alkitab-sabda-mt",
-        f"{src_lang}-{tgt_lang}",
-        split="train+validation+test",
+        "bible-nlp/biblenlp-corpus",
+        languages=[src_lang, tgt_lang],
         trust_remote_code=True,
     )
-    dataset = dataset.map(lambda x: {"book": x["verse_id"].split("_")[0]})
-
-    # OT books for testing, NT books for training and validation
-    train_ds = dataset.filter(lambda x: x["book"] in NT_BOOKS)
-    test_ds = dataset.filter(lambda x: x["book"] not in NT_BOOKS)
-    train_val_ds = train_ds.train_test_split(test_size=0.1, seed=41)
-    dataset = DatasetDict({"train": train_val_ds["train"], "validation": train_val_ds["test"], "test": test_ds})
 
     model = AutoModelForSeq2SeqLM.from_pretrained(
         args.model_name,
@@ -98,14 +58,26 @@ def main(args):
     if tgt_lang_nllb not in tokenizer.additional_special_tokens:
         tokenizer.add_special_tokens({"additional_special_tokens": [tgt_lang_nllb]})
 
-    model.resize_token_embeddings(len(tokenizer))
     tokenizer.src_lang = src_lang_nllb
     tokenizer.tgt_lang = tgt_lang_nllb
 
+    # Initialize new token embeddings with the mean of old embeddings
+    old_embeddings = model.get_input_embeddings()
+    old_num_tokens = old_embeddings.weight.size(dim=0)
+    old_embeddings_mean = old_embeddings.weight.mean(dim=0, keepdim=True)
+
+    model.resize_token_embeddings(len(tokenizer))
+    embeddings = model.get_input_embeddings()
+    embeddings.weight.data[old_num_tokens:, :] = old_embeddings_mean
+    model.tie_weights()
+
     def preprocess_function(examples):
+        batch = examples["translation"]
+        source_texts = [b["translation"][0] for b in batch]
+        target_texts = [b["translation"][1] for b in batch]
         return tokenizer(
-            examples[args.source_text_column_name],
-            text_target=examples[args.target_text_column_name],
+            source_texts,
+            text_target=target_texts,
             max_length=args.max_length,
             padding="max_length",
             truncation=True,
@@ -132,9 +104,12 @@ def main(args):
         preds, labels = eval_preds
         if isinstance(preds, tuple):
             preds = preds[0]
-        decoded_preds = tokenizer.batch_decode(preds, skip_special_tokens=True)
+
         # Replace -100 in the labels as we can't decode them.
+        preds = np.where(preds != -100, preds, tokenizer.pad_token_id)
         labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
+
+        decoded_preds = tokenizer.batch_decode(preds, skip_special_tokens=True)
         decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
 
         # Some simple post-processing

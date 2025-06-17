@@ -2,39 +2,9 @@ from argparse import ArgumentParser
 import json
 
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, pipeline
-from datasets import load_dataset, DatasetDict
+from datasets import load_dataset
 import evaluate
 import torch
-
-NT_BOOKS = [
-    "MAT",
-    "MRK",
-    "LUK",
-    "JHN",
-    "ACT",
-    "ROM",
-    "1CO",
-    "2CO",
-    "GAL",
-    "EPH",
-    "PHP",
-    "COL",
-    "1TH",
-    "2TH",
-    "1TI",
-    "2TI",
-    "TIT",
-    "PHM",
-    "HEB",
-    "JAB",
-    "1PE",
-    "2PE",
-    "1JN",
-    "2JN",
-    "3JN",
-    "JUD",
-    "REV",
-]
 
 
 def parse_args():
@@ -44,8 +14,6 @@ def parse_args():
     parser.add_argument("--tgt_lang", type=str, default="btx")
     parser.add_argument("--src_lang_nllb", type=str, default="ind_Latn")
     parser.add_argument("--tgt_lang_nllb", type=str, default="btx_Latn")
-    parser.add_argument("--source_text_column_name", type=str, default="text_source")
-    parser.add_argument("--target_text_column_name", type=str, default="text_target")
     parser.add_argument("--dataset_split_name", type=str, default="test")
     parser.add_argument("--book_name", type=str, default=None)
     parser.add_argument("--max_length", type=int, default=128)
@@ -62,23 +30,14 @@ def main(args):
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     dataset = load_dataset(
-        "LazarusNLP/alkitab-sabda-mt",
-        f"{src_lang}-{tgt_lang}",
-        split="train+validation+test",
+        "bible-nlp/biblenlp-corpus",
+        languages=[src_lang, tgt_lang],
         trust_remote_code=True,
+        split=args.dataset_split_name,
     )
-    dataset = dataset.map(lambda x: {"book": x["verse_id"].split("_")[0]})
-
-    # OT books for testing, NT books for training and validation
-    train_ds = dataset.filter(lambda x: x["book"] in NT_BOOKS)
-    test_ds = dataset.filter(lambda x: x["book"] not in NT_BOOKS)
-    train_val_ds = train_ds.train_test_split(test_size=0.1, seed=41)
-    dataset = DatasetDict({"train": train_val_ds["train"], "validation": train_val_ds["test"], "test": test_ds})
-
-    dataset = dataset[args.dataset_split_name]
 
     if args.book_name:
-        dataset = dataset.filter(lambda x: x["book"] == args.book_name)
+        dataset = dataset.filter(lambda x: x["ref"][0].split()[0] == args.book_name)
 
     model = AutoModelForSeq2SeqLM.from_pretrained(
         args.model_name,
@@ -107,7 +66,8 @@ def main(args):
         return preds, labels
 
     def compute_metrics(eval_preds):
-        preds, labels, verse_ids = eval_preds["prediction"], eval_preds["target"], eval_preds["verse_id"]
+        preds, labels = eval_preds["prediction"], eval_preds["target"]
+        refs = [ref[0] for ref in eval_preds["ref"]]
         cleaned_preds, cleaned_labels = postprocess_text(preds, labels)
 
         bleu_result = bleu.compute(predictions=cleaned_preds, references=cleaned_labels)
@@ -115,25 +75,24 @@ def main(args):
         eval_result = {"bleu": bleu_result["bleu"], "chrf": chrf_result["score"]}
         eval_result = {k: round(v, 4) for k, v in eval_result.items()}
 
-        results = [
-            {"verse_id": verse_id, "prediction": pred, "target": label}
-            for verse_id, pred, label in zip(verse_ids, preds, labels)
-        ]
+        results = [{"ref": ref, "prediction": pred, "target": label} for ref, pred, label in zip(refs, preds, labels)]
 
         return {"eval_metrics": eval_result, "results": results}
 
     def infer(batch):
+        source_texts = [b["translation"][0] for b in batch["translation"]]
+        target_texts = [b["translation"][1] for b in batch["translation"]]
         predictions = [
             out["translation_text"]
             for out in translator(
-                batch[args.source_text_column_name],
+                source_texts,
                 batch_size=args.per_device_eval_batch_size,
                 max_length=args.max_length,
                 num_beams=args.num_beams,
             )
         ]
         batch["prediction"] = predictions
-        batch["target"] = batch[args.target_text_column_name]
+        batch["target"] = target_texts
         return batch
 
     results = dataset.map(infer, batched=True, batch_size=args.per_device_eval_batch_size)
