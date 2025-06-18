@@ -61,11 +61,12 @@ def parse_args():
     parser.add_argument("--per_device_train_batch_size", type=int, default=16)
     parser.add_argument("--per_device_eval_batch_size", type=int, default=16)
     parser.add_argument("--learning_rate", type=float, default=5e-5)
-    parser.add_argument("--weight_decay", type=float, default=0.01)
+    parser.add_argument("--lr_scheduler_type", type=str, default="cosine")
+    parser.add_argument("--weight_decay", type=float, default=0.0)
     parser.add_argument("--num_train_epochs", type=int, default=20)
     parser.add_argument("--max_steps", type=int, default=-1)
     parser.add_argument("--warmup_steps", type=int, default=1000)
-    parser.add_argument("--early_stopping_patience", type=int, default=3)
+    parser.add_argument("--early_stopping_patience", type=int, default=None)
     parser.add_argument("--num_proc", type=int, default=16)
     return parser.parse_args()
 
@@ -152,7 +153,7 @@ def main(args):
 
     data_collator = DataCollatorForSeq2Seq(tokenizer, model=model)
 
-    bleu = evaluate.load("bleu")
+    sacrebleu = evaluate.load("sacrebleu")
     chrf = evaluate.load("chrf")
 
     def postprocess_text(preds, labels):
@@ -175,16 +176,18 @@ def main(args):
         # Some simple post-processing
         decoded_preds, decoded_labels = postprocess_text(decoded_preds, decoded_labels)
 
-        bleu_result = bleu.compute(predictions=decoded_preds, references=decoded_labels)
+        sacrebleu_result = sacrebleu.compute(predictions=decoded_preds, references=decoded_labels)
         chrf_result = chrf.compute(predictions=decoded_preds, references=decoded_labels)
-        result = {"bleu": bleu_result["bleu"], "chrf": chrf_result["score"]}
+        result = {"bleu": sacrebleu_result["score"], "chrf": chrf_result["score"]}
         result = {k: round(v, 4) for k, v in result.items()}
         return result
 
     training_args = Seq2SeqTrainingArguments(
         output_dir=output_dir,
-        eval_strategy="epoch",
-        save_strategy="epoch",
+        eval_strategy="steps",
+        eval_steps=1000,
+        save_strategy="steps",
+        save_steps=1000,
         per_device_train_batch_size=args.per_device_train_batch_size,
         per_device_eval_batch_size=args.per_device_eval_batch_size,
         optim="adamw_torch",
@@ -195,10 +198,13 @@ def main(args):
         max_steps=args.max_steps,
         save_total_limit=3,
         load_best_model_at_end=True,
-        metric_for_best_model="chrf",
+        metric_for_best_model="bleu",
         predict_with_generate=True,
         report_to="none",
+        lr_scheduler_type=args.lr_scheduler_type,
     )
+
+    callbacks = [EarlyStoppingCallback(args.early_stopping_patience)] if args.early_stopping_patience else None
 
     trainer = Seq2SeqTrainer(
         model=model,
@@ -208,7 +214,7 @@ def main(args):
         tokenizer=tokenizer,
         data_collator=data_collator,
         compute_metrics=compute_metrics,
-        callbacks=[EarlyStoppingCallback(args.early_stopping_patience)],
+        callbacks=callbacks,
     )
 
     trainer.train()

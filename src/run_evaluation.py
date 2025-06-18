@@ -119,7 +119,7 @@ def main(args):
         tgt_lang=tgt_lang_nllb,
     )
 
-    bleu = evaluate.load("bleu")
+    sacrebleu = evaluate.load("sacrebleu")
     chrf = evaluate.load("chrf")
 
     def postprocess_text(preds, labels):
@@ -131,9 +131,9 @@ def main(args):
         preds, labels, verse_ids = eval_preds["prediction"], eval_preds["target"], eval_preds["verse_id"]
         cleaned_preds, cleaned_labels = postprocess_text(preds, labels)
 
-        bleu_result = bleu.compute(predictions=cleaned_preds, references=cleaned_labels)
+        sacrebleu_result = sacrebleu.compute(predictions=cleaned_preds, references=cleaned_labels)
         chrf_result = chrf.compute(predictions=cleaned_preds, references=cleaned_labels)
-        eval_result = {"bleu": bleu_result["bleu"], "chrf": chrf_result["score"]}
+        eval_result = {"bleu": sacrebleu_result["score"], "chrf": chrf_result["score"]}
         eval_result = {k: round(v, 4) for k, v in eval_result.items()}
 
         results = [

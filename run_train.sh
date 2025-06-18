@@ -1,14 +1,12 @@
 python src/run_translation.py \
     --model_name facebook/nllb-200-distilled-1.3B \
-    --dataset_name bible-nlp/biblenlp-corpus \
+    --dataset_name LazarusNLP/alkitab-sabda-mt \
     --src_lang ind \
-    --tgt_lang ptu \
+    --tgt_lang btx \
     --src_lang_nllb ind_Latn \
-    --tgt_lang_nllb ptu_Latn \
+    --tgt_lang_nllb btx_Latn \
     --max_length 256 \
     --per_device_train_batch_size 64 \
     --per_device_eval_batch_size 16 \
     --learning_rate 2e-4 \
-    --weight_decay 0.01 \
-    --max_steps 5000 \
-    --early_stopping_patience 3
+    --max_steps 5000
