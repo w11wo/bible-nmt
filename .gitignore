@@ -193,7 +193,10 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 
+.DS_Store
 nllb*/
 notebooks/
 unsloth_compiled_cache/
 Qwen3*/
+gemini*/
+gpt*/
