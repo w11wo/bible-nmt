@@ -195,3 +195,5 @@ cython_debug/
 
 nllb*/
 notebooks/
+unsloth_compiled_cache/
+Qwen3*/
